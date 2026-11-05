@@ -5,10 +5,12 @@ function App() {
   const [selectedSeat, setSelectedSeat] = useState(null); // De stoel voor de popup
   const [timeLeft, setTimeLeft] = useState(10);
   const [score, setScore] = useState(0);
+  // Helemaal bovenaan, buiten de App functie (of er direct in)
+  const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
 
   const fetchSeats = async () => {
     try {
-      const response = await fetch("http://localhost:8080/seats");
+      const response = await fetch({ API_URL });
       const data = await response.json();
       setSeats(data);
     } catch (error) {
@@ -38,7 +40,7 @@ function App() {
 
   const reserveSeat = async (seat) => {
     try {
-      await fetch(`http://localhost:8080/seats/${seat.id}/reserve`, {
+      await fetch(`${API_URL}/seats/${seat.id}/reserve`, {
         method: "POST",
       });
       setSelectedSeat(seat);
@@ -52,7 +54,7 @@ function App() {
   const paySeat = async () => {
     if (!selectedSeat) return;
     try {
-      await fetch(`http://localhost:8080/seats/${selectedSeat.id}/reserve`, {
+      await fetch(`${API_URL}/seats/${selectedSeat.id}/reserve`, {
         method: "POST",
       });
       setScore((prevScore) => prevScore + 1);
@@ -65,7 +67,7 @@ function App() {
 
   const releaseSeat = async (seatId) => {
     try {
-      await fetch(`http://localhost:8080/seats/${seatId}/release`, {
+      await fetch(`${API_URL}/seats/${seatId}/release`, {
         method: "POST",
       });
       setSelectedSeat(null);
