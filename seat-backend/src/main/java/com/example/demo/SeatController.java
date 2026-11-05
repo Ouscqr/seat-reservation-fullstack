@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.CrossOrigin;
 
 @RestController 
 @RequestMapping("/seats")
-@CrossOrigin(origins = "seat-reservation-fullstack.vercel.app")
+@CrossOrigin(origins = "https://seat-reservation-fullstack.vercel.app")
 public class SeatController {
 
 

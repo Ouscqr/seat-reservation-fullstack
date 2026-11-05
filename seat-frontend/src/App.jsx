@@ -10,7 +10,7 @@ function App() {
 
   const fetchSeats = async () => {
     try {
-      const response = await fetch({ API_URL });
+      const response = await fetch(`${API_URL}/seats`);
       const data = await response.json();
       setSeats(data);
     } catch (error) {
