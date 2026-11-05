@@ -1,0 +1,13 @@
+# Java / Spring Boot
+target/
+.mvn/
+mvnw
+mvnw.cmd
+.idea/
+*.iml
+
+# React / Node.js
+node_modules/
+dist/
+.env
+.vscode/
