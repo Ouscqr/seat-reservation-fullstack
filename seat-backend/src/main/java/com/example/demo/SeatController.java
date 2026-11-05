@@ -29,13 +29,6 @@ public class SeatController {
         return seatService.getSeats(status);
     }
 
-    //Vraag waarom moeten wij hier geen instance van maken zoals hierboven "private final SeatService seatService"
-    //En ook waarom wij geen instance van SeatController maken met reserveSeat als field
-    // @PostMapping("/{seatId}/reserve")
-    // public String reserveSeat (@PathVariable Long seatId){
-    //     return seatService.reserveSeat(seatId);
-    // }
-
     @PostMapping("/{seatId}/reserve")
     public String reserveSeat(@PathVariable Long seatId) {
         return seatService.reserveSeat(seatId);
