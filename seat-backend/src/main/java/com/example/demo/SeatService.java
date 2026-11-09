@@ -16,10 +16,10 @@ public class SeatService {
 
     public List <Seat> getSeats(SeatStatus status) {
         if (status != null) {
-            return seatRepository.findByStatus(status);
+            return seatRepository.findByStatusOrderByIdAsc(status);
         }
 
-        return seatRepository.findAll();
+        return seatRepository.findAllByOrderByIdAsc();
     }
 
     @Transactional 

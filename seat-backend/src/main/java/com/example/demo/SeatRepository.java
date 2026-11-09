@@ -10,7 +10,17 @@ import org.springframework.data.repository.query.Param;
 import jakarta.persistence.LockModeType;
 
 public interface SeatRepository extends JpaRepository <Seat, Long> {
-    List<Seat> findByStatus (SeatStatus status);
+    /*
+     * BELANGRIJK: altijd expliciet ordenen.
+     * Zonder ORDER BY mag PostgreSQL zelf de volgorde bepalen, en een rij die
+     * net ge-UPDATE is (status AVAILABLE -> LOCKED) wordt achteraan de tabel
+     * geschreven. Het gevolg in de UI: de gereserveerde stoel "springt naar
+     * achteren". H2 gaf toevallig altijd de id-volgorde terug, daarom zag je
+     * dit pas na de overstap naar PostgreSQL.
+     */
+    List<Seat> findAllByOrderByIdAsc ();
+
+    List<Seat> findByStatusOrderByIdAsc (SeatStatus status);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s from Seat s WHERE s.id = :id")
