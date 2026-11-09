@@ -1,29 +1,69 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 function App() {
   const [seats, setSeats] = useState([]);
   const [selectedSeat, setSelectedSeat] = useState(null); // De stoel voor de popup
   const [timeLeft, setTimeLeft] = useState(10);
   const [score, setScore] = useState(0);
-  // Helemaal bovenaan, buiten de App functie (of er direct in)
-  const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  // Zonder trailing slash, anders vraag je //seats aan
+  const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8080").replace(/\/+$/, "");
+  const inFlight = useRef(false);
 
   const fetchSeats = async () => {
+    // Geen overlappende requests: bij een koude Render/Neon start duurt een
+    // request lang en dan stapelen de polls zich anders op.
+    if (inFlight.current) return;
+    inFlight.current = true;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
     try {
-      const response = await fetch(`${API_URL}/seats`);
+      const response = await fetch(`${API_URL}/seats`, {
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
       const data = await response.json();
-      setSeats(data);
-    } catch (error) {
-      console.error("Fout bij ophalen:", error);
+      if (!Array.isArray(data)) throw new Error("Onverwacht antwoord van de server");
+
+      // Altijd op id sorteren: de volgorde mag nooit van de database afhangen
+      setSeats([...data].sort((a, b) => a.id - b.id));
+      setError(null);
+    } catch (err) {
+      // De al getoonde stoelen blijven staan; alleen de fout wordt gemeld
+      setError(err.name === "AbortError" ? "timeout" : err.message);
+      console.error("Fout bij ophalen:", err);
+    } finally {
+      clearTimeout(timeout);
+      inFlight.current = false;
+      setLoading(false);
     }
   };
 
-  //auto2s poll
+  // poll elke 5s (2s is te agressief voor Render free + Neon)
   useEffect(() => {
     fetchSeats();
-    const interval = setInterval(fetchSeats, 2000);
+    const interval = setInterval(fetchSeats, 5000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const releaseSeat = async (seatId) => {
+    try {
+      const response = await fetch(`${API_URL}/seats/${seatId}/release`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setSelectedSeat(null);
+      fetchSeats();
+    } catch (error) {
+      console.error(error);
+    }
+  };
 
   useEffect(() => {
     if (!selectedSeat) return;
@@ -40,9 +80,10 @@ function App() {
 
   const reserveSeat = async (seat) => {
     try {
-      await fetch(`${API_URL}/seats/${seat.id}/reserve`, {
+      const response = await fetch(`${API_URL}/seats/${seat.id}/reserve`, {
         method: "POST",
       });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setSelectedSeat(seat);
       setTimeLeft(10);
       fetchSeats();
@@ -54,22 +95,11 @@ function App() {
   const paySeat = async () => {
     if (!selectedSeat) return;
     try {
-      await fetch(`${API_URL}/seats/${selectedSeat.id}/reserve`, {
+      const response = await fetch(`${API_URL}/seats/${selectedSeat.id}/reserve`, {
         method: "POST",
       });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setScore((prevScore) => prevScore + 1);
-      setSelectedSeat(null);
-      fetchSeats();
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  const releaseSeat = async (seatId) => {
-    try {
-      await fetch(`${API_URL}/seats/${seatId}/release`, {
-        method: "POST",
-      });
       setSelectedSeat(null);
       fetchSeats();
     } catch (error) {
@@ -88,6 +118,18 @@ function App() {
     >
       <h1>Pick</h1>
       <h2 style={{ color: "blue" }}>Jouw Score: {score}</h2>
+
+      {error && (
+        <p style={{ color: "#b00020", textAlign: "center" }}>
+          Kan stoelen niet laden ({error}) — opnieuw proberen…
+        </p>
+      )}
+      {loading && seats.length === 0 && !error && (
+        <p style={{ textAlign: "center" }}>Stoelen laden…</p>
+      )}
+      {!loading && !error && seats.length === 0 && (
+        <p style={{ textAlign: "center" }}>Geen stoelen gevonden in de database.</p>
+      )}
 
       <div
         style={{
