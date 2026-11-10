@@ -27,3 +27,4 @@ public interface SeatRepository extends JpaRepository <Seat, Long> {
     Optional <Seat> findByIdWithLock(@Param("id") Long id);
 
 }
+heb geteset moet nu die aanpassingen die test van claude even via github adden !!!! 
