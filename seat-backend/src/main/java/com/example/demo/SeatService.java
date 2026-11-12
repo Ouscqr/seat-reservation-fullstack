@@ -48,6 +48,30 @@ public class SeatService {
         seatRepository.save(seat);
         return "Seat " + seat.getSeatNumber() + " is released and available again";
     }
+
+    @Transactional 
+    public String buySeat(Long seatId) {
+        Seat seat = seatRepository.findById(seatId).orElseThrow( ()-> new SeatNotFoundException(seatId));
+        if (seat.getStatus() == SeatStatus.SOLD) {
+            return "Seat is already bought";
+        }
+
+        seat.setStatus(SeatStatus.SOLD);
+        seatRepository.save(seat);
+        return "Paid for the seat congrats";
+    }
+
+    @Transactional 
+    public String sellSeat(Long seatId) {
+        Seat seat = seatRepository.findById(seatId).orElseThrow( ()-> new SeatNotFoundException(seatId));
+        if (seat.getStatus() != SeatStatus.SOLD) {
+            return "Cant sell what you never bought";
+        }
+        
+        seat.setStatus(SeatStatus.AVAILABLE);
+        seatRepository.save(seat);
+        return "Sold your seat Good";
+    }
     
 
 }

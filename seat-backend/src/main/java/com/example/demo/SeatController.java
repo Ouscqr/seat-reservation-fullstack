@@ -39,5 +39,14 @@ public class SeatController {
         return seatService.releaseSeat(seatId);
     }
 
+    @PostMapping("/{seatId}/buy")
+    public String buySeat(@PathVariable Long seatId) {
+        return seatService.buySeat(seatId);
+    }
+
+    @PostMapping("/{seatId}/sell")
+    public String sellSeat(@PathVariable Long seatId) {
+        return seatService.sellSeat(seatId);
+    }
 
 }
