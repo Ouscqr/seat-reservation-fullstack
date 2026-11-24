@@ -81,9 +81,13 @@ function normalizeSeat(raw) {
   const seatNumber =
     typeof raw?.seatNumber === "string" ? raw.seatNumber.trim().toUpperCase() : "";
   const status = typeof raw?.status === "string" ? raw.status.toUpperCase() : "";
+  const bookedBy =
+    typeof raw?.bookedBy === "string" && raw.bookedBy.trim()
+      ? raw.bookedBy.trim()
+      : null;
 
   if (!Number.isFinite(id) || !seatNumber || !STATUSES.has(status)) return null;
-  return { id, seatNumber, status };
+  return { id, seatNumber, status, bookedBy };
 }
 
 export async function fetchSeats({ signal } = {}) {
@@ -131,7 +135,8 @@ export async function fetchSeats({ signal } = {}) {
 const ACTION_SPECS = {
   reserve: {
     successOutcome: "reserved",
-    isSuccess: (body) => body === "Reserved Sucesfully, pay now",
+    isSuccess: (body) =>
+      body === "Reserved Sucesfully, pay now" || body.startsWith("Reserved by "),
     failures: { "This seat is taken": "taken" },
   },
   release: {
@@ -151,12 +156,13 @@ const ACTION_SPECS = {
   },
 };
 
-async function postSeatAction(seatId, action, options) {
+async function postSeatAction(seatId, action, options = {}) {
   const spec = ACTION_SPECS[action];
-  const { text } = await request(`/seats/${seatId}/${action}`, {
+  const { query = "", ...requestOptions } = options;
+  const { text } = await request(`/seats/${seatId}/${action}${query}`, {
     method: "POST",
     timeoutMs: 20000,
-    ...options,
+    ...requestOptions,
   });
   const body = text.trim();
 
@@ -169,8 +175,11 @@ async function postSeatAction(seatId, action, options) {
   return { ok: false, outcome: "unexpected", message: body };
 }
 
-export const reserveSeat = (seatId, options) =>
-  postSeatAction(seatId, "reserve", options);
+export const reserveSeat = (seatId, options = {}) => {
+  const { requester, ...requestOptions } = options;
+  const query = requester ? `?by=${encodeURIComponent(requester)}` : "";
+  return postSeatAction(seatId, "reserve", { ...requestOptions, query });
+};
 export const releaseSeat = (seatId, options) =>
   postSeatAction(seatId, "release", options);
 export const buySeat = (seatId, options) =>
@@ -178,45 +187,36 @@ export const buySeat = (seatId, options) =>
 export const sellSeat = (seatId, options) =>
   postSeatAction(seatId, "sell", options);
 
-// Fires N parallel reserve requests at one real seat. Pessimistic locking in
-// the backend means at most one can win; we report what actually happened.
-export async function runReservationRace(seatId, attempts = 10, { signal } = {}) {
-  const started = performance.now();
+export async function fetchCabinStatus({ signal } = {}) {
+  const { text } = await request("/seats/status", {
+    signal,
+    timeoutMs: 20000,
+  });
 
-  const requests = await Promise.all(
-    Array.from({ length: attempts }, async (_, index) => {
-      const requestStart = performance.now();
-      try {
-        const result = await reserveSeat(seatId, { signal });
-        return {
-          index: index + 1,
-          ok: result.ok,
-          outcome: result.outcome,
-          message: result.message,
-          status: 200,
-          ms: Math.round(performance.now() - requestStart),
-        };
-      } catch (error) {
-        return {
-          index: index + 1,
-          ok: false,
-          outcome: error.code ?? "error",
-          message: error.detail || error.message,
-          status: error.status ?? null,
-          ms: Math.round(performance.now() - requestStart),
-        };
-      }
-    }),
-  );
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new ApiError("The API returned a status that was not JSON.", {
+      code: "invalid",
+      detail: text.slice(0, 180),
+    });
+  }
+
+  if (
+    typeof data?.lastResetAt !== "string" ||
+    typeof data?.nextResetAt !== "string"
+  ) {
+    throw new ApiError("The API returned an unexpected cabin status.", {
+      code: "invalid",
+      detail: JSON.stringify(data).slice(0, 180),
+    });
+  }
 
   return {
-    requests,
-    acquired: requests.filter((r) => r.outcome === "reserved").length,
-    rejected: requests.filter((r) => r.outcome === "taken").length,
-    failed: requests.filter(
-      (r) => r.outcome !== "reserved" && r.outcome !== "taken",
-    ).length,
-    durationMs: Math.round(performance.now() - started),
+    lastResetAt: data.lastResetAt,
+    nextResetAt: data.nextResetAt,
+    resetIntervalMinutes: Number(data.resetIntervalMinutes) || 60,
   };
 }
 

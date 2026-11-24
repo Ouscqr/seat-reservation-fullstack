@@ -190,6 +190,9 @@ export function SeatMap({
               const isAisle = cabin.hasAisle && columnIndex === cabin.leftCount;
               const state = seat ? seatState(seat, holdSeatId) : null;
               const isPending = seat?.id === pendingSeatId;
+              const bookedBy = seat?.bookedBy
+                ? ` by ${seat.bookedBy}`
+                : "";
 
               return (
                 <Fragment key={`${row.number}-${letter}`}>
@@ -210,8 +213,13 @@ export function SeatMap({
                       )}
                       aria-label={`Seat ${seat.seatNumber}, ${
                         isPending ? "reserving" : STATE_LABELS[state]
-                      }`}
+                      }${bookedBy}`}
                       aria-busy={isPending || undefined}
+                      data-tooltip={
+                        seat.bookedBy
+                          ? `Booked by ${seat.bookedBy}`
+                          : undefined
+                      }
                       tabIndex={seat.id === activeSeatId ? 0 : -1}
                       disabled={isPending}
                       onFocus={() => setFocusId(seat.id)}

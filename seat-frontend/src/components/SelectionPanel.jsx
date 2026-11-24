@@ -168,7 +168,15 @@ export function SelectionPanel({
         <div>
           <p className={styles.seatCode}>{inspect.seat.seatNumber}</p>
           <p className={styles.status}>{inspectCopy.status}</p>
-          <p className={styles.body}>{inspectCopy.body}</p>
+          <p className={styles.body}>
+            {inspect.kind === "sold"
+              ? `This seat is booked${
+                  inspect.seat.bookedBy
+                    ? ` by ${inspect.seat.bookedBy}`
+                    : ""
+                }.`
+              : inspectCopy.body}
+          </p>
 
           {actionError && (
             <p className={styles.error} role="alert">

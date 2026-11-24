@@ -4,11 +4,16 @@
 **API:** [seat-backend-7ajo.onrender.com/seats](https://seat-backend-7ajo.onrender.com/seats)  
 **Source:** [github.com/Ouscqr/seat-reservation-fullstack](https://github.com/Ouscqr/seat-reservation-fullstack)
 
-![Seat map with available, on hold and booked seats](seat-frontend/docs/screenshots/home.png)
+![Seat map with available, on hold and booked seats, and a booked by tooltip](seat-frontend/docs/screenshots/home.png)
 
 A seat reservation demo. Pick a seat, hold it for 10 seconds, and confirm the
 booking. The server uses PostgreSQL row locks so two requests cannot hold the
 same seat.
+
+The page also has a bot test. Choose a seat and 2 to 50 named bots, then send all
+their reserve requests at once. The first request books the seat and stores the
+winner's name in `bookedBy`; the rest are rejected. The request log below the
+controls shows what happened, in the order the browser received the responses.
 
 The API runs on Render's free plan and sleeps after inactivity. The app handles
 that with a plain start-up state and keeps retrying. See [Cold starts](#cold-starts).
@@ -21,17 +26,17 @@ that with a plain start-up state and keeps retrying. See [Cold starts](#cold-sta
 - If the timer ends, the page releases the seat automatically.
 - If another request wins the race, the panel says the seat is no longer
   available and lists nearby available seats.
-- The map refreshes every 5 seconds and after every action.
+- The map refreshes every 2 seconds and after every action.
 
 ## How double bookings are prevented
 
-1. When you select a seat, the server starts a transaction and locks that seat
+1. When a request arrives, the server starts a transaction and locks that seat
    row in the database.
 2. Other requests for the same seat wait until the first transaction finishes.
-3. The first request marks the seat as on hold. The others continue, see that
-   state, and are rejected.
-4. Confirm the booking to mark the seat booked, or let the 10 second timer
-   release it.
+3. The first request changes the seat. The others continue, see the new status,
+   and are rejected.
+4. A normal select holds the seat for 10 seconds. The bot test books it
+   immediately and stores the winner in `bookedBy`.
 
 The method is in
 [`SeatService.reserveSeat()`](seat-backend/src/main/java/com/example/demo/SeatService.java):
@@ -39,14 +44,20 @@ The method is in
 ```java
 Seat seat = seatRepository
     .findByIdWithLock(seatId)
-    .orElseThrow(() ->
-        new SeatNotFoundException(seatId));
+    .orElseThrow(() -> new SeatNotFoundException(seatId));
 
 if (seat.getStatus() != SeatStatus.AVAILABLE) {
     return "This seat is taken";
 }
 
-seat.setStatus(SeatStatus.LOCKED);
+if (bookedBy == null) {
+    // A normal reservation holds the seat for 10 seconds.
+    seat.setStatus(SeatStatus.LOCKED);
+} else {
+    // The bot test books it immediately and records the winner.
+    seat.setStatus(SeatStatus.SOLD);
+    seat.setBookedBy(bookedBy);
+}
 seatRepository.save(seat);
 ```
 
@@ -55,23 +66,56 @@ so. There are no accounts or payments in the demo.
 
 ## Test the lock
 
-The page includes a button that sends 10 parallel reserve requests for one
-available seat, then releases it. The result table shows how many requests
-succeeded and how many were rejected.
+Choose a seat or let the page pick a random available one. Set 2 to 50 bots
+(default 10) and run. Each bot sends
+`POST /seats/{id}/reserve?by=Bot%20N` at the same time. The first request locks
+the row, marks the seat SOLD, and stores `bookedBy`. The other bots see SOLD and
+get "This seat is taken". The winning seat is not released.
 
-![Ten parallel requests, one success and nine rejections](seat-frontend/docs/screenshots/stress.png)
+The log shows the completion time, bot name, result, seat and response time.
+Rows are ordered by the browser's response time, not by the server's lock order.
+The winning row is in the accent colour. The summary above the log counts the
+requests. The seat map tooltip and the side panel show who booked a seat.
+
+![Ten requests, one reserved by Bot 1, nine rejected, with response times](seat-frontend/docs/screenshots/bots.png)
+
+The JUnit test `SeatConcurrencyTest` sends 12 concurrent named requests, checks
+that exactly one succeeds, and checks that the stored `bookedBy` matches the
+request that got the success response. A second test covers the hourly reset.
+
+### The cabin reset
+
+`CabinState` stores one `lastResetAt` timestamp in the database. There is no
+scheduled job, because a sleeping Render instance would not run it. On any seat
+request, if the timestamp is more than one hour old, a conditional update claims
+the reset, sets every seat AVAILABLE and clears `bookedBy` in one transaction,
+then the request continues. The conditional update means only one concurrent
+request can perform the reset.
+
+`GET /seats/status` returns `lastResetAt`, `nextResetAt` and the interval. When
+no seats are available the page disables the test and shows the next reset time.
+
+### Polling and the free tier
+
+`GET /seats` polls every 2 seconds while the tab is visible. The Page Visibility
+API stops the interval when the tab is hidden and refreshes once when it becomes
+visible again. A visible tab still keeps Neon's compute awake; that is the trade
+for a live 2 second map. The hidden pause and the lazy reset keep background work
+down.
 
 ## Screenshots
 
 | Seat hold with countdown | Booking confirmed |
 | --- | --- |
-| ![Panel showing seat B2 on hold with 0:09 remaining](seat-frontend/docs/screenshots/hold.png) | ![Panel confirming seat B2 is booked](seat-frontend/docs/screenshots/booked.png) |
+| ![Panel showing seat C1 on hold with 0:09 remaining](seat-frontend/docs/screenshots/hold.png) | ![Panel confirming seat C1 is booked](seat-frontend/docs/screenshots/booked.png) |
 
-| Seat taken by another request | Phone layout |
+| Seat taken by another request | Booked by a bot |
 | --- | --- |
-| ![Panel explaining that seat C1 is no longer available](seat-frontend/docs/screenshots/conflict.png) | ![Seat map on a 390 pixel phone](seat-frontend/docs/screenshots/mobile.png) |
+| ![Panel explaining that seat C1 is no longer available](seat-frontend/docs/screenshots/conflict.png) | ![Panel showing seat B2 booked by Bot 7](seat-frontend/docs/screenshots/booked-by.png) |
 
-![Booking panel on a phone](seat-frontend/docs/screenshots/mobile-hold.png)
+| Phone layout | Booking panel on a phone |
+| --- | --- |
+| ![Seat map on a 390 pixel phone](seat-frontend/docs/screenshots/mobile.png) | ![Booking panel on a phone](seat-frontend/docs/screenshots/mobile-hold.png) |
 
 ## Cold starts
 
@@ -96,18 +140,25 @@ Render service may be down rather than starting.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/seats` | All seats, sorted by id |
-| `POST` | `/seats/{id}/reserve` | Lock an available seat |
+| `GET` | `/seats` | All seats, including `bookedBy` |
+| `GET` | `/seats/status` | Last reset, next reset and reset interval |
+| `POST` | `/seats/{id}/reserve` | Lock an available seat for a 10 second hold |
+| `POST` | `/seats/{id}/reserve?by=Bot%207` | Book immediately and store the named booker |
 | `POST` | `/seats/{id}/release` | Free a locked seat |
 | `POST` | `/seats/{id}/buy` | Turn a locked seat into a sale |
 | `POST` | `/seats/{id}/sell` | Relist a sold seat |
 
-Every action returns HTTP 200 with a plain text body, including failures such as
-"This seat is taken". The frontend reads those bodies instead of assuming a 200
-means success. Unknown ids return 404 JSON.
+`bookedBy` is null for normal holds and purchases. It is set only when a named
+request takes the seat directly, which is what the bot test uses.
 
-The frontend polls `GET /seats` every 5 seconds, never overlaps requests, and
-refreshes immediately after every action.
+Every action returns HTTP 200 with a plain text body, including failures such as
+"This seat is taken". A winning bot gets "Reserved by Bot 7". The frontend reads
+those bodies instead of assuming a 200 means success. Unknown ids return 404
+JSON.
+
+The frontend polls `GET /seats` every 2 seconds while the tab is visible, never
+overlaps requests, and refreshes immediately after every action. Polling stops
+when the tab is hidden.
 
 ## Run locally
 
@@ -142,17 +193,22 @@ cd seat-backend && ./mvnw test
 cd seat-frontend && npm ci && npm run lint && npm run build
 ```
 
-The interface was checked in Chromium at 1440px and 390px: reserve, hold,
-release, expiry, booking, relisting, conflict handling, cold start recovery, HTTP
-errors, empty responses, keyboard navigation and the 10 request test. axe-core
-reported no WCAG 2.1 A or AA violations, and all 17 text and control colour pairs
-meet their contrast targets.
+The backend tests cover the named concurrent reserve and the lazy reset. The
+interface was checked in Chromium at 1440px and 390px: reserve, hold, release,
+expiry, booking, relisting, conflict handling, the bot test with 2 to 50 bots,
+the ordered response log, `bookedBy` on the map and in the panel, the no-seat
+reset time, polling pause and resume, cold start recovery, HTTP errors, empty
+responses and keyboard navigation. axe-core reported no WCAG 2.1 A or AA
+violations, and all 17 text and control colour pairs meet their contrast targets.
 
 ## Demo limits
 
 - No accounts, payments or server-side hold expiry.
-- Anyone can release a hold or relist a booked seat.
+- Bot names are self-declared. Anyone can use any name.
+- The cabin reset is lazy, so it happens on the next seat request after an hour
+  with no reset.
 - Free hosting cold starts.
+- A visible tab polls every 2 seconds and keeps Neon's compute awake.
 - The layout comes from the API, so the live database may show more rows than
   the local seed.
 

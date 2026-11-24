@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchSeats, describeError } from "../api/seats.js";
 
-// 5s matches the backend's comfort zone (Render free tier + Neon). Every
-// mutation triggers an immediate refresh on top of this.
-export const POLL_INTERVAL_MS = 5000;
+// 2 seconds keeps the map live. Polling stops entirely while the tab is
+// hidden, so a background tab does not keep the database awake.
+export const POLL_INTERVAL_MS = 2000;
 
 export function useSeats(pollMs = POLL_INTERVAL_MS) {
   const [seats, setSeats] = useState([]);
@@ -58,20 +58,39 @@ export function useSeats(pollMs = POLL_INTERVAL_MS) {
 
   useEffect(() => {
     mounted.current = true;
-    // Initial fetch plus the polling subscription. The rule targets render
-    // cascades; this is synchronising with an external API.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load();
+    let interval = null;
 
-    const interval = setInterval(() => load(), pollMs);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") load();
+    const startPolling = () => {
+      if (interval !== null) return;
+      interval = setInterval(() => load(), pollMs);
     };
+    const stopPolling = () => {
+      if (interval === null) return;
+      clearInterval(interval);
+      interval = null;
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        load();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    if (document.visibilityState === "visible") {
+      // Initial fetch plus the polling subscription. The rule targets render
+      // cascades; this is synchronising with an external API.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      load();
+      startPolling();
+    }
+
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       mounted.current = false;
-      clearInterval(interval);
+      stopPolling();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       activeRequest.current?.abort();
       activeRequest.current = null;

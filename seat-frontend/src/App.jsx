@@ -418,7 +418,7 @@ function App() {
           />
         </div>
 
-        <ConcurrencySection seats={seats} onRefresh={refresh} />
+        <ConcurrencySection seats={seats} loading={loading} onRefresh={refresh} />
       </main>
     </div>
   );

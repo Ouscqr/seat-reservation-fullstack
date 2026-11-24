@@ -5,6 +5,7 @@ import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import jakarta.persistence.LockModeType;
@@ -25,5 +26,9 @@ public interface SeatRepository extends JpaRepository <Seat, Long> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s from Seat s WHERE s.id = :id")
     Optional <Seat> findByIdWithLock(@Param("id") Long id);
+
+    @Modifying
+    @Query("update Seat s set s.status = :status, s.bookedBy = null")
+    int resetAll(@Param("status") SeatStatus status);
 
 }

@@ -25,6 +25,7 @@ public class Seat {
     
     @Enumerated(EnumType.STRING)
     private SeatStatus status;     // "AVAILABLE", "LOCKED", "SOLD"
-    
+
+    private String bookedBy;       // set when a named bot wins the seat
 }
 
