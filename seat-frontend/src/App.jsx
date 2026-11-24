@@ -1,507 +1,425 @@
-import { useState, useEffect, useRef } from "react";
-
-// Kleuren per stoelstatus: SOLD (verkocht) is rood.
-const SEAT_COLORS = {
-  AVAILABLE: "#4CAF50",
-  LOCKED: "#FF9800",
-  SOLD: "#F44336",
-};
-
-const seatColor = (status) => SEAT_COLORS[status] ?? "#9E9E9E";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  buySeat,
+  describeError,
+  releaseSeat,
+  reserveSeat,
+  sellSeat,
+} from "./api/seats.js";
+import {
+  buildCabin,
+  nearestAvailableSeats,
+  seatState,
+} from "./lib/cabin.js";
+import { HOLD_MS, loadStoredHold, saveStoredHold } from "./lib/hold.js";
+import { useCountdown } from "./hooks/useCountdown.js";
+import { useSeats } from "./hooks/useSeats.js";
+import { ConcurrencySection } from "./components/ConcurrencySection.jsx";
+import { SeatMapSection } from "./components/SeatMapSection.jsx";
+import { SelectionPanel } from "./components/SelectionPanel.jsx";
+import { TopBar } from "./components/TopBar.jsx";
+import styles from "./App.module.css";
 
 function App() {
-  const [seats, setSeats] = useState([]);
-  const [selectedSeat, setSelectedSeat] = useState(null); // De stoel voor de popup
-  // Aangeklikte gereserveerde (LOCKED) stoel: kopen of vrijgeven
-  const [lockedSeat, setLockedSeat] = useState(null);
-  const [timeLeft, setTimeLeft] = useState(10);
-  const [score, setScore] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  // Zonder trailing slash, anders vraag je //seats aan
-  const API_URL = (
-    import.meta.env.VITE_API_URL || "http://localhost:8080"
-  ).replace(/\/+$/, "");
-  const inFlight = useRef(false);
+  const { seats, rejectedCount, loading, error, lastUpdated, refresh } =
+    useSeats();
+  const cabin = useMemo(() => buildCabin(seats), [seats]);
 
-  const fetchSeats = async () => {
-    // Geen overlappende requests: bij een koude Render/Neon start duurt een
-    // request lang en dan stapelen de polls zich anders op.
-    if (inFlight.current) return;
-    inFlight.current = true;
+  const [hold, setHold] = useState(() => loadStoredHold());
+  const [pendingSeatId, setPendingSeatId] = useState(null);
+  const [pendingAction, setPendingAction] = useState(null);
+  const [actionError, setActionError] = useState("");
+  const [inspectSeatId, setInspectSeatId] = useState(null);
+  const [bookedSeatNumber, setBookedSeatNumber] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [attemptStartedAt] = useState(() => Date.now());
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+  const panelRef = useRef(null);
+  const holdRef = useRef(hold);
+  const releasingRef = useRef(false);
+  const mountedRef = useRef(true);
 
-    try {
-      const response = await fetch(`${API_URL}/seats`, {
-        headers: { Accept: "application/json" },
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const remainingMs = useCountdown(hold?.deadline ?? null);
+  const holdSeatId = hold?.seatId ?? null;
 
-      const data = await response.json();
-      if (!Array.isArray(data))
-        throw new Error("Onverwacht antwoord van de server");
+  const inspect = useMemo(() => {
+    if (!inspectSeatId || hold) return null;
+    const seat = seats.find((entry) => entry.id === inspectSeatId);
+    if (!seat || seat.status === "AVAILABLE") return null;
+    return { seat, kind: seat.status === "SOLD" ? "sold" : "held" };
+  }, [inspectSeatId, seats, hold]);
 
-      // Altijd op id sorteren: de volgorde mag nooit van de database afhangen
-      setSeats([...data].sort((a, b) => a.id - b.id));
-      setError(null);
-    } catch (err) {
-      // De al getoonde stoelen blijven staan; alleen de fout wordt gemeld
-      setError(err.name === "AbortError" ? "timeout" : err.message);
-      console.error("Fout bij ophalen:", err);
-    } finally {
-      clearTimeout(timeout);
-      inFlight.current = false;
-      setLoading(false);
-    }
-  };
-
-  // poll elke 5s (2s is te agressief voor Render free + Neon)
   useEffect(() => {
-    fetchSeats();
-    const interval = setInterval(fetchSeats, 5000);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    holdRef.current = hold;
+  }, [hold]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
-  const releaseSeat = async (seatId) => {
-    try {
-      const response = await fetch(`${API_URL}/seats/${seatId}/release`, {
-        method: "POST",
+  useEffect(() => {
+    saveStoredHold(hold);
+  }, [hold]);
+
+  // The API is the source of truth. If a hold disappears there, reflect it here.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!hold || !lastUpdated || seats.length === 0) return;
+    if (hold.verifiedAt && lastUpdated <= hold.verifiedAt) return;
+
+    const seat = seats.find((entry) => entry.id === hold.seatId);
+    if (!seat) {
+      setHold(null);
+      setInspectSeatId(null);
+      setNotice({
+        kind: "error",
+        title: `Seat ${hold.seatNumber} is no longer on the map.`,
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setSelectedSeat(null);
-      setLockedSeat(null);
-      fetchSeats();
-    } catch (error) {
-      console.error(error);
+      return;
+    }
+
+    if (seat.status !== "LOCKED") {
+      setHold(null);
+      setInspectSeatId(null);
+      setNotice(
+        seat.status === "SOLD"
+          ? {
+              kind: "info",
+              title: `Seat ${hold.seatNumber} was booked by someone else.`,
+              text: "The map shows the current state.",
+            }
+          : {
+              kind: "info",
+              title: `The hold on ${hold.seatNumber} ended.`,
+              text: "The seat is available again.",
+            },
+      );
+    }
+  }, [seats, lastUpdated, hold]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  const releaseHold = async (reason = "user") => {
+    const activeHold = holdRef.current;
+    if (!activeHold || releasingRef.current) return;
+
+    releasingRef.current = true;
+    setPendingAction("release");
+    setActionError("");
+
+    try {
+      const result = await releaseSeat(activeHold.seatId);
+      if (!mountedRef.current) return;
+
+      if (result.outcome === "released" || result.outcome === "not-locked") {
+        setHold(null);
+        setBookedSeatNumber(null);
+        setInspectSeatId(null);
+        setNotice(
+          reason === "expired"
+            ? {
+                kind: "info",
+                title: `The hold on ${activeHold.seatNumber} ended.`,
+                text: "The seat is available again.",
+              }
+            : {
+                kind: "info",
+                title: `Seat ${activeHold.seatNumber} released.`,
+                text: "The seat is available again.",
+              },
+        );
+        refresh();
+      } else {
+        setActionError("The seat could not be released. Try again.");
+      }
+    } catch {
+      if (mountedRef.current) {
+        setActionError("The seat could not be released. Try again.");
+      }
+    } finally {
+      releasingRef.current = false;
+      if (mountedRef.current) setPendingAction(null);
     }
   };
+
+  const releaseRef = useRef(releaseHold);
+  useEffect(() => {
+    releaseRef.current = releaseHold;
+  });
 
   useEffect(() => {
-    if (!selectedSeat) return;
+    if (remainingMs !== 0) return;
+    const activeHold = holdRef.current;
+    if (!activeHold || activeHold.deadline == null) return;
+    releaseRef.current("expired");
+  }, [remainingMs]);
 
-    if (timeLeft === 0) {
-      releaseSeat(selectedSeat.id);
-      setSelectedSeat(null);
+  useEffect(() => {
+    if (!holdSeatId) return;
+    if (!window.matchMedia("(max-width: 900px)").matches) return;
+    panelRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [holdSeatId]);
+
+  const reserve = async (seat) => {
+    if (pendingSeatId != null) return;
+    if (holdRef.current) {
+      setNotice({
+        kind: "info",
+        title: `Release seat ${holdRef.current.seatNumber} before selecting another seat.`,
+      });
       return;
     }
 
-    const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [timeLeft, selectedSeat]);
+    setPendingSeatId(seat.id);
+    setNotice(null);
+    setActionError("");
+    setInspectSeatId(null);
+    setBookedSeatNumber(null);
 
-  const reserveSeat = async (seat) => {
     try {
-      const response = await fetch(`${API_URL}/seats/${seat.id}/reserve`, {
-        method: "POST",
+      const result = await reserveSeat(seat.id);
+      if (!mountedRef.current) return;
+
+      if (result.outcome === "reserved") {
+        const now = Date.now();
+        setHold({
+          seatId: seat.id,
+          seatNumber: seat.seatNumber,
+          deadline: now + HOLD_MS,
+          verifiedAt: now,
+        });
+        refresh();
+      } else if (result.outcome === "taken") {
+        setNotice({
+          kind: "conflict",
+          title: `Seat ${seat.seatNumber} is no longer available.`,
+          text: "Another request reserved it first. Choose another seat.",
+          suggestions: nearestAvailableSeats(cabin, seat.id, 3),
+        });
+        refresh();
+      } else {
+        setNotice({
+          kind: "error",
+          title: "The seat could not be reserved.",
+          text: "Try again.",
+        });
+        refresh();
+      }
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const described = describeError(err);
+      setNotice({
+        kind: "error",
+        title: "The seat could not be reserved.",
+        text: described.detail,
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setSelectedSeat(seat);
-      setTimeLeft(10);
-      fetchSeats();
-    } catch (error) {
-      console.error(error);
+    } finally {
+      if (mountedRef.current) setPendingSeatId(null);
     }
   };
 
-  // seat is optioneel: de popup geeft selectedSeat mee, de LOCKED-popup lockedSeat
-  const buySeat = async (seat) => {
-    const seatToBuy = seat ?? selectedSeat;
-    if (!seatToBuy) return;
-    try {
-      const response = await fetch(`${API_URL}/seats/${seatToBuy.id}/buy`, {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setScore((prevScore) => prevScore + 1);
-      setSelectedSeat(null);
-      setLockedSeat(null);
-      fetchSeats();
-    } catch (error) {
-      console.error(error);
-    }
-  };
+  const handleSeatAction = (seat) => {
+    if (pendingSeatId != null) return;
 
-  // Verkoop een gekochte (SOLD) stoel: hij komt weer beschikbaar.
-  const sellSeat = async (seat) => {
-    if (
-      !window.confirm(
-        `Wil je stoel ${seat.seatNumber} verkopen? De stoel komt weer beschikbaar.`,
-      )
-    )
+    const currentHold = holdRef.current;
+    const state = seatState(seat, currentHold?.seatId ?? null);
+
+    if (state === "available") {
+      reserve(seat);
       return;
+    }
+
+    if (state === "mine") {
+      setNotice(null);
+      setActionError("");
+      setInspectSeatId(null);
+      setBookedSeatNumber(null);
+      return;
+    }
+
+    if (currentHold) {
+      setNotice({
+        kind: "info",
+        title: `Release seat ${currentHold.seatNumber} before selecting another seat.`,
+      });
+      return;
+    }
+
+    setInspectSeatId(seat.id);
+    setBookedSeatNumber(null);
+    setNotice(null);
+    setActionError("");
+  };
+
+  const confirmBooking = async () => {
+    const activeHold = holdRef.current;
+    if (!activeHold || pendingAction) return;
+
+    setPendingAction("buy");
+    setActionError("");
+    setNotice(null);
 
     try {
-      const response = await fetch(`${API_URL}/seats/${seat.id}/sell`, {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setScore((prevScore) => Math.max(0, prevScore - 1));
-      fetchSeats();
-    } catch (error) {
-      console.error(error);
+      const result = await buySeat(activeHold.seatId);
+      if (!mountedRef.current) return;
+
+      if (result.outcome === "booked") {
+        setHold(null);
+        setBookedSeatNumber(activeHold.seatNumber);
+        setInspectSeatId(null);
+        refresh();
+      } else if (result.outcome === "already-booked") {
+        setHold(null);
+        setNotice({
+          kind: "error",
+          title: `Seat ${activeHold.seatNumber} was already booked.`,
+          text: "The map will refresh.",
+        });
+        refresh();
+      } else {
+        setActionError("The booking could not be completed. Try again.");
+      }
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const described = describeError(err);
+      setActionError(`The booking could not be completed. ${described.detail}`);
+    } finally {
+      if (mountedRef.current) setPendingAction(null);
     }
   };
 
-  // "Reserveer nu": de stoel blijft LOCKED voor jou, de countdown stopt.
-  const keepReservation = () => {
-    setSelectedSeat(null);
+  const inspectAction = async () => {
+    if (!inspect || pendingAction) return;
+    const { seat, kind } = inspect;
+
+    setPendingAction(kind === "sold" ? "sell" : "release");
+    setActionError("");
+    setNotice(null);
+
+    try {
+      if (kind === "sold") {
+        const result = await sellSeat(seat.id);
+        if (result.outcome === "relisted") {
+          setInspectSeatId(null);
+          setNotice({
+            kind: "info",
+            title: `Seat ${seat.seatNumber} is available again.`,
+          });
+          refresh();
+        } else if (result.outcome === "not-sold") {
+          setInspectSeatId(null);
+          setNotice({
+            kind: "info",
+            title: `Seat ${seat.seatNumber} is not booked.`,
+            text: "The map will refresh.",
+          });
+          refresh();
+        } else {
+          setActionError("The seat could not be updated. Try again.");
+        }
+      } else {
+        const result = await releaseSeat(seat.id);
+        if (result.outcome === "released") {
+          setInspectSeatId(null);
+          setNotice({
+            kind: "info",
+            title: `Seat ${seat.seatNumber} released.`,
+          });
+          refresh();
+        } else if (result.outcome === "not-locked") {
+          setInspectSeatId(null);
+          setNotice({
+            kind: "info",
+            title: `Seat ${seat.seatNumber} is no longer on hold.`,
+            text: "The map will refresh.",
+          });
+          refresh();
+        } else {
+          setActionError("The seat could not be updated. Try again.");
+        }
+      }
+    } catch {
+      if (mountedRef.current) {
+        setActionError("The seat could not be updated. Try again.");
+      }
+    } finally {
+      if (mountedRef.current) setPendingAction(null);
+    }
   };
 
-  // Eén klik-afhandeling voor beide kanten van het gangpad.
-  const handleSeatClick = (seat) => {
-    if (seat.status === "AVAILABLE") {
-      reserveSeat(seat);
-    } else if (seat.status === "LOCKED") {
-      // Oranje: popup met "kopen" of "vrijgeven"
-      setLockedSeat(seat);
-    } else if (seat.status === "SOLD") {
-      // Rood: jouw stoel, klik om hem te verkopen
-      sellSeat(seat);
-    }
+  const focusMap = () => {
+    const title = document.getElementById("seat-map-title");
+    title?.scrollIntoView({ block: "start", behavior: "smooth" });
+    title?.focus({ preventScroll: true });
+  };
+
+  const backToSelection = () => {
+    setInspectSeatId(null);
+    setActionError("");
+    setNotice(null);
+  };
+
+  const chooseAgain = () => {
+    setBookedSeatNumber(null);
+    setActionError("");
+    setNotice(null);
+    focusMap();
+  };
+
+  const handleSuggestion = (seat) => {
+    setNotice(null);
+    setActionError("");
+    reserve(seat);
   };
 
   return (
-    <div
-      style={{
-        padding: "20px",
-        fontFamily: "Arial",
-        backgroundColor: "#e0e0e0",
-        minHeight: "100vh",
-      }}
-    >
-      <h1>Pick</h1>
-      <h2 style={{ color: "blue" }}>Jouw Score: {score}</h2>
+    <div className={styles.page} id="top">
+      <a className="skip-link" href="#seat-map-title">
+        Skip to the seat map
+      </a>
 
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          gap: "20px",
-          flexWrap: "wrap",
-          marginBottom: "20px",
-        }}
-      >
-        {[
-          ["AVAILABLE", "Beschikbaar"],
-          ["LOCKED", "Gereserveerd"],
-          ["SOLD", "Verkocht"],
-        ].map(([status, label]) => (
-          <div
-            key={status}
-            style={{ display: "flex", alignItems: "center", gap: "6px" }}
-          >
-            <span
-              style={{
-                width: "16px",
-                height: "16px",
-                display: "inline-block",
-                backgroundColor: seatColor(status),
-                border: "2px solid #333",
-                borderRadius: "4px",
-              }}
-            />
-            <span>{label}</span>
-          </div>
-        ))}
-      </div>
+      <TopBar />
 
-      {error && (
-        <p style={{ color: "#b00020", textAlign: "center" }}>
-          Kan stoelen niet laden ({error}) — opnieuw proberen…
-        </p>
-      )}
-      {loading && seats.length === 0 && !error && (
-        <p style={{ textAlign: "center" }}>Stoelen laden…</p>
-      )}
-      {!loading && !error && seats.length === 0 && (
-        <p style={{ textAlign: "center" }}>
-          Geen stoelen gevonden in de database.
-        </p>
-      )}
+      <main className={styles.main}>
+        <div className={styles.layout}>
+          <SeatMapSection
+            cabin={cabin}
+            seats={seats}
+            loading={loading}
+            error={error}
+            lastUpdated={lastUpdated}
+            attemptStartedAt={attemptStartedAt}
+            rejectedCount={rejectedCount}
+            holdSeatId={holdSeatId}
+            pendingSeatId={pendingSeatId}
+            onSeatAction={handleSeatAction}
+            onRetry={refresh}
+          />
 
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          backgroundColor: "#ffffff",
-          padding: "40px",
-          borderRadius: "100px 100px 20px 20px",
-          border: "4px solid #333",
-          width: "fit-content",
-          margin: "0 auto",
-          boxShadow: "0 10px 20px rgba(0,0,0,0.2)",
-        }}
-      >
-        {seats.map((seat) => {
-          const rowLetter = seat.seatNumber.charAt(0);
-
-          return (
-            <div
-              key={seat.id}
-              style={{ display: "flex", gap: "10px", marginBottom: "10px" }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  gap: "10px",
-                  width: "180px",
-                  justifyContent: "flex-end",
-                }}
-              >
-                {["A", "B", "C"].includes(rowLetter) && (
-                  <div
-                    onClick={() => handleSeatClick(seat)}
-                    style={{
-                      width: "50px",
-                      height: "50px",
-                      display: "flex",
-                      justifyContent: "center",
-                      alignItems: "center",
-                      borderRadius: "10px 10px 0 0",
-                      border: "2px solid #333",
-                      cursor:
-                        seat.status === "AVAILABLE" ? "pointer" : "not-allowed",
-                      backgroundColor: seatColor(seat.status),
-                      color: "white",
-                      fontWeight: "bold",
-                      fontSize: "14px",
-                    }}
-                  >
-                    {seat.seatNumber}
-                  </div>
-                )}
-              </div>
-
-              <div
-                style={{
-                  width: "40px",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  color: "#999",
-                  fontWeight: "bold",
-                }}
-              >
-                {rowLetter}
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  gap: "10px",
-                  width: "180px",
-                  justifyContent: "flex-start",
-                }}
-              >
-                {["D", "E", "F"].includes(rowLetter) && (
-                  <div
-                    onClick={() => handleSeatClick(seat)}
-                    style={{
-                      width: "50px",
-                      height: "50px",
-                      display: "flex",
-                      justifyContent: "center",
-                      alignItems: "center",
-                      borderRadius: "10px 10px 0 0",
-                      border: "2px solid #333",
-                      cursor:
-                        seat.status === "AVAILABLE" ? "pointer" : "not-allowed",
-                      backgroundColor: seatColor(seat.status),
-                      color: "white",
-                      fontWeight: "bold",
-                      fontSize: "14px",
-                    }}
-                  >
-                    {seat.seatNumber}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {selectedSeat && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            backgroundColor: "rgba(0,0,0,0.5)",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-          }}
-        >
-          <div
-            style={{
-              backgroundColor: "white",
-              padding: "30px",
-              borderRadius: "10px",
-              textAlign: "center",
-              boxShadow: "0 5px 15px rgba(0,0,0,0.3)",
-            }}
-          >
-            <h2>Stoel {selectedSeat.seatNumber} Reserveren</h2>
-            <p
-              style={{
-                fontSize: "24px",
-                color: timeLeft <= 3 ? "red" : "black",
-              }}
-            >
-              Je hebt nog <strong>{timeLeft}</strong> seconden!
-            </p>
-            <p style={{ marginTop: 0, color: "#555" }}>
-              Reserveer nu = stoel blijft voor jou gereserveerd. Koop =
-              definitief afrekenen.
-            </p>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "center",
-                gap: "10px",
-                flexWrap: "wrap",
-              }}
-            >
-              <button
-                onClick={keepReservation}
-                style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#4CAF50",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                }}
-              >
-                Reserveer nu
-              </button>
-              <button
-                onClick={() => buySeat(selectedSeat)}
-                style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#1976D2",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                }}
-              >
-                Koop
-              </button>
-              <button
-                onClick={() => releaseSeat(selectedSeat.id)}
-                style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#f44336",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                }}
-              >
-                Annuleer
-              </button>
-            </div>
-          </div>
+          <SelectionPanel
+            panelRef={panelRef}
+            hold={hold}
+            remainingMs={remainingMs ?? 0}
+            totalMs={HOLD_MS}
+            pendingAction={pendingAction}
+            actionError={actionError}
+            inspect={inspect}
+            bookedSeatNumber={bookedSeatNumber}
+            notice={notice}
+            onConfirm={confirmBooking}
+            onRelease={() => releaseHold("user")}
+            onInspectAction={inspectAction}
+            onBack={backToSelection}
+            onChooseAgain={chooseAgain}
+            onSuggestion={handleSuggestion}
+            onDismissNotice={() => setNotice(null)}
+          />
         </div>
-      )}
 
-      {lockedSeat && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            backgroundColor: "rgba(0,0,0,0.5)",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-          }}
-        >
-          <div
-            style={{
-              backgroundColor: "white",
-              padding: "30px",
-              borderRadius: "10px",
-              textAlign: "center",
-              boxShadow: "0 5px 15px rgba(0,0,0,0.3)",
-            }}
-          >
-            <h2>Stoel {lockedSeat.seatNumber} is gereserveerd</h2>
-            <p style={{ marginTop: 0, color: "#555" }}>
-              Je kunt de reservering vrijgeven of de stoel direct kopen.
-            </p>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "center",
-                gap: "10px",
-                flexWrap: "wrap",
-              }}
-            >
-              <button
-                onClick={() => buySeat(lockedSeat)}
-                style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#1976D2",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                }}
-              >
-                Kopen
-              </button>
-              <button
-                onClick={() => releaseSeat(lockedSeat.id)}
-                style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#FF9800",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                }}
-              >
-                Vrijgeven
-              </button>
-              <button
-                onClick={() => setLockedSeat(null)}
-                style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#757575",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                }}
-              >
-                Sluiten
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        <ConcurrencySection seats={seats} onRefresh={refresh} />
+      </main>
     </div>
   );
 }

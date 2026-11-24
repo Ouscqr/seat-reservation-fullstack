@@ -1,0 +1,148 @@
+.section {
+  min-inline-size: 0;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  scroll-margin-block-start: 16px;
+}
+
+.header h1:focus {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 20px;
+  flex-wrap: wrap;
+  margin-block-end: 16px;
+}
+
+.summary {
+  margin-block-start: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.updated {
+  font-size: 12px;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
+.refresh {
+  padding: 4px 10px;
+  border: 1px solid #8a8f98;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  transition: border-color 120ms ease;
+}
+
+.refresh:hover {
+  border-color: var(--text);
+}
+
+.refresh:disabled {
+  opacity: 0.6;
+}
+
+.starting {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-block-size: 240px;
+  padding: 28px 2px;
+}
+
+.spinner {
+  flex: none;
+  inline-size: 16px;
+  block-size: 16px;
+  margin-block-start: 3px;
+  border: 2px solid var(--border);
+  border-block-start-color: var(--text-muted);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.state {
+  min-block-size: 240px;
+  padding: 28px 2px;
+}
+
+.stateTitle {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.muted {
+  max-inline-size: 480px;
+  margin-block-start: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.textButton {
+  margin-block-start: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.textButton:hover {
+  color: var(--text);
+}
+
+.textButton:disabled {
+  opacity: 0.55;
+}
+
+.stale {
+  margin-block-end: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.note {
+  margin-block-start: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-subtle);
+}
+
+@media (max-width: 600px) {
+  .section {
+    padding: 14px;
+  }
+
+  .tools {
+    gap: 8px;
+  }
+
+  .starting,
+  .state {
+    min-block-size: 200px;
+    padding-block: 20px;
+  }
+}

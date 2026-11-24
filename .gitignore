@@ -11,3 +11,6 @@ node_modules/
 dist/
 .env
 .vscode/
+
+# macOS
+.DS_Store
